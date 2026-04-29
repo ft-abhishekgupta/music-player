@@ -27,7 +27,7 @@ const APP_CONFIG = {
 // MSAL Configuration (only needed if mode is "msal")
 const MSAL_CONFIG = {
     auth: {
-        clientId: "YOUR_CLIENT_ID_HERE",
+        clientId: "bbe586fe-ae92-40ed-83a9-18823eb71e9f",
         authority: "https://login.microsoftonline.com/common",
         redirectUri: window.location.origin + window.location.pathname,
     },
