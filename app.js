@@ -165,34 +165,39 @@
         try {
             const token = await getAccessToken();
             const shareToken = encodeSharingUrl(ONEDRIVE_CONFIG.sharedFolderUrl);
-            // Request id and @microsoft.graph.downloadUrl explicitly
-            const apiUrl = `https://graph.microsoft.com/v1.0/shares/${shareToken}/driveItem/children?$select=id,name,size,file&$top=200`;
+            // Request id, name, size, parentReference (for driveId), and downloadUrl
+            const apiUrl = `https://graph.microsoft.com/v1.0/shares/${shareToken}/driveItem/children?$select=id,name,size,file,parentReference,@microsoft.graph.downloadUrl&$top=200`;
 
+            console.log('Fetching files from:', apiUrl);
             const response = await fetch(apiUrl, {
                 headers: { 'Authorization': `Bearer ${token}`, 'Prefer': 'redeemSharingLink' }
             });
 
             if (!response.ok) {
+                console.log('Primary endpoint failed:', response.status, '- trying fallback');
                 // Fallback: try with expand
-                const altUrl = `https://graph.microsoft.com/v1.0/shares/${shareToken}/driveItem?$expand=children($select=id,name,size,file)`;
+                const altUrl = `https://graph.microsoft.com/v1.0/shares/${shareToken}/driveItem?$expand=children($select=id,name,size,file,parentReference)`;
                 const altResp = await fetch(altUrl, {
                     headers: { 'Authorization': `Bearer ${token}`, 'Prefer': 'redeemSharingLink' }
                 });
                 if (!altResp.ok) throw new Error(`API error: ${altResp.status}`);
                 const altData = await altResp.json();
-                processOneDriveFiles(altData.children || []);
+                console.log('Fallback response:', JSON.stringify(altData).substring(0, 500));
+                await processOneDriveFiles(altData.children || [], token, shareToken);
                 return;
             }
 
             const data = await response.json();
-            processOneDriveFiles(data.value || []);
+            console.log('API response - item count:', data.value?.length, '- first item:', JSON.stringify(data.value?.[0]).substring(0, 300));
+            await processOneDriveFiles(data.value || [], token, shareToken);
         } catch (err) {
             loadingScreen.classList.add('hidden');
+            console.error('loadMusicFromOneDrive error:', err);
             showError(`Failed to load music: ${err.message}`);
         }
     }
 
-    function processOneDriveFiles(files) {
+    async function processOneDriveFiles(files, token, shareToken) {
         playlist = [];
         for (const file of files) {
             const ext = '.' + file.name.split('.').pop().toLowerCase();
@@ -203,10 +208,15 @@
                     size: file.size || 0,
                     downloadUrl: file['@microsoft.graph.downloadUrl'] || file['@content.downloadUrl'] || null,
                     itemId: file.id || null,
+                    driveId: (file.parentReference && file.parentReference.driveId) || null,
                 });
             }
         }
         playlist.sort((a, b) => a.name.localeCompare(b.name));
+
+        // Store shareToken and token for later use
+        playlist._shareToken = shareToken;
+
         loadingScreen.classList.add('hidden');
 
         if (playlist.length === 0) {
@@ -243,91 +253,87 @@
 
         trackTitle.textContent = track.name;
         trackArtist.textContent = track.fullName;
+        renderPlaylist();
 
-        // If no download URL, fetch it on demand
+        // If no download URL cached, fetch it
         if (!track.downloadUrl) {
             try {
                 const token = await getAccessToken();
                 const shareToken = encodeSharingUrl(ONEDRIVE_CONFIG.sharedFolderUrl);
+                console.log('Fetching download URL for:', track.fullName, 'itemId:', track.itemId, 'driveId:', track.driveId);
 
-                // Method 1: Get item by ID and request download URL
-                if (track.itemId) {
-                    const itemUrl = `https://graph.microsoft.com/v1.0/shares/${shareToken}/driveItem/children/${track.itemId}`;
-                    const resp = await fetch(itemUrl, {
-                        headers: { 'Authorization': `Bearer ${token}`, 'Prefer': 'redeemSharingLink' }
+                // Strategy 1: Use /drives/{driveId}/items/{itemId} if we have driveId
+                if (track.driveId && track.itemId) {
+                    const url = `https://graph.microsoft.com/v1.0/drives/${track.driveId}/items/${track.itemId}?$select=id,@microsoft.graph.downloadUrl`;
+                    console.log('Strategy 1:', url);
+                    const resp = await fetch(url, {
+                        headers: { 'Authorization': `Bearer ${token}` }
                     });
+                    console.log('Strategy 1 response:', resp.status);
                     if (resp.ok) {
                         const data = await resp.json();
                         track.downloadUrl = data['@microsoft.graph.downloadUrl'];
+                        console.log('Strategy 1 downloadUrl:', track.downloadUrl ? 'GOT IT' : 'null');
                     }
                 }
 
-                // Method 2: Use the /content endpoint which returns a redirect to the download URL
-                if (!track.downloadUrl) {
-                    let contentUrl;
-                    if (track.itemId) {
-                        contentUrl = `https://graph.microsoft.com/v1.0/shares/${shareToken}/driveItem/children/${track.itemId}/content`;
-                    } else {
-                        contentUrl = `https://graph.microsoft.com/v1.0/shares/${shareToken}/driveItem:/${encodeURIComponent(track.fullName)}:/content`;
-                    }
-                    const resp = await fetch(contentUrl, {
-                        headers: { 'Authorization': `Bearer ${token}`, 'Prefer': 'redeemSharingLink' },
-                        redirect: 'manual'
+                // Strategy 2: Use /shares/{token}/items/{itemId} 
+                if (!track.downloadUrl && track.itemId) {
+                    const url = `https://graph.microsoft.com/v1.0/shares/${shareToken}/items/${track.itemId}?$select=id,@microsoft.graph.downloadUrl`;
+                    console.log('Strategy 2:', url.substring(0, 100));
+                    const resp = await fetch(url, {
+                        headers: { 'Authorization': `Bearer ${token}`, 'Prefer': 'redeemSharingLink' }
                     });
-                    // A 302 redirect gives us the download URL in the Location header
-                    if (resp.type === 'opaqueredirect' || resp.status === 302) {
-                        // Can't read Location from opaque redirect; use the URL directly
-                        track.downloadUrl = contentUrl;
-                    } else if (resp.ok) {
-                        // If it returned the content directly, create a blob URL
+                    console.log('Strategy 2 response:', resp.status);
+                    if (resp.ok) {
+                        const data = await resp.json();
+                        track.downloadUrl = data['@microsoft.graph.downloadUrl'];
+                        console.log('Strategy 2 downloadUrl:', track.downloadUrl ? 'GOT IT' : 'null');
+                    }
+                }
+
+                // Strategy 3: Download as blob via /drives/{driveId}/items/{itemId}/content
+                if (!track.downloadUrl && track.driveId && track.itemId) {
+                    const url = `https://graph.microsoft.com/v1.0/drives/${track.driveId}/items/${track.itemId}/content`;
+                    console.log('Strategy 3 (blob):', url);
+                    const resp = await fetch(url, {
+                        headers: { 'Authorization': `Bearer ${token}` }
+                    });
+                    console.log('Strategy 3 response:', resp.status, resp.type);
+                    if (resp.ok) {
                         const blob = await resp.blob();
                         track.downloadUrl = URL.createObjectURL(blob);
+                        console.log('Strategy 3: created blob URL');
                     }
                 }
 
-                // Method 3: Fetch via driveItem path-based access
+                // Strategy 4: Download as blob via share token path
                 if (!track.downloadUrl) {
-                    const pathUrl = `https://graph.microsoft.com/v1.0/shares/${shareToken}/driveItem:/${encodeURIComponent(track.fullName)}`;
-                    const resp = await fetch(pathUrl, {
+                    let url;
+                    if (track.itemId) {
+                        url = `https://graph.microsoft.com/v1.0/shares/${shareToken}/items/${track.itemId}/content`;
+                    } else {
+                        url = `https://graph.microsoft.com/v1.0/shares/${shareToken}/driveItem:/${encodeURIComponent(track.fullName)}:/content`;
+                    }
+                    console.log('Strategy 4 (blob fallback):', url.substring(0, 100));
+                    const resp = await fetch(url, {
                         headers: { 'Authorization': `Bearer ${token}`, 'Prefer': 'redeemSharingLink' }
                     });
+                    console.log('Strategy 4 response:', resp.status, resp.type);
                     if (resp.ok) {
-                        const data = await resp.json();
-                        track.downloadUrl = data['@microsoft.graph.downloadUrl'];
+                        const blob = await resp.blob();
+                        track.downloadUrl = URL.createObjectURL(blob);
+                        console.log('Strategy 4: created blob URL');
                     }
                 }
+
             } catch (e) {
                 console.error('Failed to get download URL:', e);
             }
         }
 
         if (!track.downloadUrl) {
-            // Last resort: stream directly via Graph API with auth header
-            try {
-                const token = await getAccessToken();
-                const shareToken = encodeSharingUrl(ONEDRIVE_CONFIG.sharedFolderUrl);
-                let contentUrl;
-                if (track.itemId) {
-                    contentUrl = `https://graph.microsoft.com/v1.0/shares/${shareToken}/driveItem/children/${track.itemId}/content`;
-                } else {
-                    contentUrl = `https://graph.microsoft.com/v1.0/shares/${shareToken}/driveItem:/${encodeURIComponent(track.fullName)}:/content`;
-                }
-                const resp = await fetch(contentUrl, {
-                    headers: { 'Authorization': `Bearer ${token}`, 'Prefer': 'redeemSharingLink' }
-                });
-                if (resp.ok) {
-                    const blob = await resp.blob();
-                    track.downloadUrl = URL.createObjectURL(blob);
-                }
-            } catch (e) {
-                console.error('Failed to stream track:', e);
-                showError('Unable to play this track.');
-                return;
-            }
-        }
-
-        if (!track.downloadUrl) {
-            showError('Unable to get download URL for this track.');
+            showError('Unable to get download URL for this track. Check browser console for details.');
             return;
         }
 
@@ -338,7 +344,6 @@
         albumArt.classList.add('playing');
         renderPlaylist();
 
-        // Update media session
         if ('mediaSession' in navigator) {
             navigator.mediaSession.metadata = new MediaMetadata({
                 title: track.name,
