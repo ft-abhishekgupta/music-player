@@ -29,7 +29,7 @@ const MSAL_CONFIG = {
     auth: {
         clientId: "bbe586fe-ae92-40ed-83a9-18823eb71e9f",
         authority: "https://login.microsoftonline.com/common",
-        redirectUri: window.location.origin + window.location.pathname,
+        redirectUri: "https://ft-abhishekgupta.github.io/music-player/",
     },
     cache: {
         cacheLocation: "localStorage",
