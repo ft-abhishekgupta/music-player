@@ -1,17 +1,32 @@
-// Microsoft Authentication Configuration
-// To set up your own Azure AD app:
-// 1. Go to https://portal.azure.com → Azure Active Directory → App registrations → New registration
-// 2. Name: "Music Player" (or any name you prefer)
-// 3. Supported account types: "Accounts in any organizational directory and personal Microsoft accounts"
-// 4. Redirect URI: Select "Single-page application (SPA)" and enter your GitHub Pages URL
-//    e.g., https://<your-username>.github.io/music-player/
-// 5. After registration, copy the "Application (client) ID" and paste it below
-// 6. Under API permissions, add: Microsoft Graph → Delegated → Files.Read.All
-//    (No admin consent needed for personal accounts)
+// ============================================================
+// Music Player Configuration
+// ============================================================
+// 
+// MODE 1 (No Auth Required): Use songs.json manifest
+//   - Create a songs.json file with direct download URLs
+//   - Run the included generate-manifest.ps1 script to build it
+//   - No sign-in needed! Works purely as a static site.
+//
+// MODE 2 (Optional): Use Microsoft sign-in for dynamic file discovery
+//   - Requires an Azure AD app registration (see README)
+//   - Any Microsoft account can sign in
+//   - Automatically discovers files from the shared OneDrive folder
+// ============================================================
 
+const APP_CONFIG = {
+    // Set to "manifest" for no-auth mode, or "msal" for Microsoft sign-in mode
+    mode: "msal",
+
+    // Path to the songs manifest file (used in "manifest" mode)
+    manifestUrl: "songs.json",
+
+    // Supported audio file extensions
+    supportedFormats: ['.mp3', '.m4a', '.flac', '.wav', '.ogg', '.aac', '.wma', '.opus'],
+};
+
+// MSAL Configuration (only needed if mode is "msal")
 const MSAL_CONFIG = {
     auth: {
-        // Replace with your Azure AD Application (client) ID
         clientId: "YOUR_CLIENT_ID_HERE",
         authority: "https://login.microsoftonline.com/common",
         redirectUri: window.location.origin + window.location.pathname,
@@ -22,15 +37,12 @@ const MSAL_CONFIG = {
     },
 };
 
-// OneDrive shared folder configuration
+// OneDrive shared folder URL (only needed if mode is "msal")
 const ONEDRIVE_CONFIG = {
-    // The shared folder URL (used to generate the sharing token)
     sharedFolderUrl: "https://1drv.ms/f/c/968aae9395918ed8/IgB9mJz7oGujQKYYjJKUNLdrASqRthfOsVY09SCyolLABD8",
-    // Supported audio file extensions
-    supportedFormats: ['.mp3', '.m4a', '.flac', '.wav', '.ogg', '.aac', '.wma', '.opus'],
 };
 
-// Graph API scopes needed
+// Graph API scopes
 const LOGIN_SCOPES = {
-    scopes: ["Files.Read.All", "Files.Read"],
+    scopes: ["Files.Read.All"],
 };

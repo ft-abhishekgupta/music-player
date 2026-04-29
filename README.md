@@ -1,75 +1,78 @@
 # 🎵 Cloud Music Player
 
-A sleek, browser-based music player that streams audio files from a OneDrive shared folder. Designed for deployment on GitHub Pages.
+A sleek, browser-based music player that streams audio files from a OneDrive shared folder. Deployed on GitHub Pages.
 
 ## Features
 
-- 🔐 Microsoft account authentication (MSAL.js)
-- 📂 Automatic file listing from OneDrive shared folder
-- 🎵 Supports MP3, M4A, FLAC, WAV, OGG, AAC, WMA, OPUS
+- 🎵 Streams music directly from OneDrive (no local storage needed)
 - ▶️ Full playback controls (play/pause, next/prev, shuffle, repeat)
-- 📊 Progress bar with seek
-- 🔊 Volume control
+- 📊 Progress bar with seek & volume control
 - ⌨️ Keyboard shortcuts (Space, arrows, Ctrl+arrows)
-- 📱 Responsive design (mobile-friendly)
-- 🌙 Dark theme
+- 📱 Responsive dark theme UI
+- 🔊 OS-level media controls integration
 
-## Setup Instructions
+## Why is Microsoft Sign-in Required?
 
-### 1. Register an Azure AD Application
+Your OneDrive folder **is** publicly shared — the web page loads fine in a browser. However, Microsoft's Graph API **requires an OAuth token for ALL programmatic access**, even to public content. This is a Microsoft platform limitation, not a permissions issue.
 
-1. Go to [Azure Portal](https://portal.azure.com)
-2. Navigate to **Azure Active Directory** → **App registrations** → **New registration**
+The sign-in is:
+- ✅ One-click (if already logged into Microsoft)
+- ✅ Works with ANY Microsoft account (personal or work)
+- ✅ Only requests read-only file access
+- ✅ No admin consent needed
+
+## Setup (One-time, ~2 minutes)
+
+### Step 1: Register an Azure AD App
+
+1. Go to [Azure App Registrations](https://portal.azure.com/#blade/Microsoft_AAD_RegisteredApps/ApplicationsListBlade)
+2. Click **New registration**
 3. Fill in:
-   - **Name**: `Music Player` (or any name)
+   - **Name**: `Music Player`
    - **Supported account types**: *Accounts in any organizational directory and personal Microsoft accounts*
-   - **Redirect URI**: Select **Single-page application (SPA)** and enter:
+   - **Redirect URI**: Select **Single-page application (SPA)** → enter your GitHub Pages URL:
      ```
      https://<your-username>.github.io/music-player/
      ```
 4. Click **Register**
-5. Copy the **Application (client) ID**
+5. Copy the **Application (client) ID** from the overview page
 
-### 2. Configure API Permissions
+### Step 2: Add API Permission
 
-1. In your app registration, go to **API permissions**
-2. Click **Add a permission** → **Microsoft Graph** → **Delegated permissions**
-3. Add: `Files.Read.All`
-4. Click **Add permissions**
+1. In your app, go to **API permissions** → **Add a permission**
+2. Select **Microsoft Graph** → **Delegated permissions**
+3. Search and add: `Files.Read.All`
+4. Click **Add permissions** (no admin consent needed)
 
-*(No admin consent is needed for personal Microsoft accounts)*
+### Step 3: Configure & Deploy
 
-### 3. Update Configuration
+1. Edit `config.js` — set `mode: "msal"` and paste your Client ID:
+   ```javascript
+   mode: "msal",
+   ...
+   clientId: "your-client-id-here",
+   ```
 
-Edit `config.js` and replace `YOUR_CLIENT_ID_HERE` with your Application (client) ID:
+2. Push to GitHub:
+   ```bash
+   git add . && git commit -m "Configure music player"
+   git remote add origin https://github.com/<you>/music-player.git
+   git push -u origin main
+   ```
 
-```javascript
-clientId: "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-```
+3. Enable GitHub Pages: **Settings** → **Pages** → **Source: main branch**
 
-### 4. Deploy to GitHub Pages
+Your player will be live at `https://<your-username>.github.io/music-player/`
 
-```bash
-# Initialize and push to GitHub
-git init
-git add .
-git commit -m "Initial commit - Cloud Music Player"
-git remote add origin https://github.com/<your-username>/music-player.git
-git branch -M main
-git push -u origin main
-```
+## Alternative: Static Manifest Mode (No Sign-in)
 
-Then in your GitHub repository:
-1. Go to **Settings** → **Pages**
-2. Under **Source**, select **Deploy from a branch**
-3. Select **main** branch and **/ (root)** folder
-4. Click **Save**
+If you prefer no authentication, you can create a `songs.json` with direct download URLs for each file:
 
-Your site will be live at: `https://<your-username>.github.io/music-player/`
+1. In OneDrive, share each music file individually ("Anyone with the link")
+2. Convert each share link to an embed URL (see `generate-manifest.ps1`)
+3. Set `mode: "manifest"` in `config.js`
 
-### 5. Update Redirect URI
-
-Make sure the redirect URI in your Azure AD app matches your GitHub Pages URL exactly (including trailing slash).
+**Note**: This requires generating individual share links per file and URLs may expire.
 
 ## Keyboard Shortcuts
 
@@ -85,17 +88,10 @@ Make sure the redirect URI in your Azure AD app matches your GitHub Pages URL ex
 
 ## Local Development
 
-Simply open `index.html` in a browser, or use a local server:
-
 ```bash
-# Python
-python -m http.server 8000
-
-# Node.js
 npx serve .
+# Then add http://localhost:3000/ as a redirect URI in your Azure app
 ```
-
-For local development, add `http://localhost:8000/` as an additional redirect URI in your Azure AD app.
 
 ## License
 

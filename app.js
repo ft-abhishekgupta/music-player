@@ -35,17 +35,73 @@
     const durationEl = document.getElementById('duration');
     const albumArt = document.querySelector('.album-art');
 
-    // Initialize MSAL
+    // ==================== INITIALIZATION ====================
+
+    function init() {
+        audio.volume = 0.8;
+        bindEvents();
+
+        if (APP_CONFIG.mode === 'manifest') {
+            loginBtn.classList.add('hidden');
+            loadFromManifest();
+        } else if (APP_CONFIG.mode === 'msal') {
+            initMSAL();
+        }
+    }
+
+    // ==================== MANIFEST MODE (No Auth) ====================
+
+    async function loadFromManifest() {
+        welcomeScreen.classList.add('hidden');
+        loadingScreen.classList.remove('hidden');
+
+        try {
+            const response = await fetch(APP_CONFIG.manifestUrl);
+            if (!response.ok) {
+                throw new Error(`Failed to load ${APP_CONFIG.manifestUrl} (${response.status}). Run generate-manifest.ps1 to create it.`);
+            }
+
+            const data = await response.json();
+            const songs = data.songs || data;
+
+            playlist = songs.map(song => ({
+                name: song.name || song.title || song.fileName.replace(/\.[^/.]+$/, ''),
+                fullName: song.fileName || song.name,
+                size: song.size || 0,
+                downloadUrl: song.url || song.downloadUrl,
+            }));
+
+            playlist.sort((a, b) => a.name.localeCompare(b.name));
+
+            loadingScreen.classList.add('hidden');
+
+            if (playlist.length === 0) {
+                showError('No songs found in songs.json');
+                return;
+            }
+
+            renderPlaylist();
+            playerContainer.classList.remove('hidden');
+            trackCount.textContent = `${playlist.length} track${playlist.length !== 1 ? 's' : ''}`;
+        } catch (err) {
+            loadingScreen.classList.add('hidden');
+            welcomeScreen.classList.remove('hidden');
+            document.querySelector('.welcome-screen p').textContent = err.message;
+            showError(err.message);
+        }
+    }
+
+    // ==================== MSAL MODE (Microsoft Sign-in) ====================
+
     function initMSAL() {
         try {
             msalInstance = new msal.PublicClientApplication(MSAL_CONFIG);
-            // Handle redirect response
             msalInstance.handleRedirectPromise().then(handleResponse).catch(err => {
                 console.error('Redirect error:', err);
             });
         } catch (err) {
             console.error('MSAL init error:', err);
-            showError('Failed to initialize authentication. Please check your config.js settings.');
+            showError('Failed to initialize authentication. Check config.js.');
         }
     }
 
@@ -62,14 +118,12 @@
         }
     }
 
-    // Auth functions
     async function signIn() {
         try {
             const response = await msalInstance.loginPopup(LOGIN_SCOPES);
             currentAccount = response.account;
             onSignedIn();
         } catch (err) {
-            console.error('Login error:', err);
             if (err.errorCode === 'user_cancelled') return;
             showError('Sign in failed. Please try again.');
         }
@@ -90,31 +144,23 @@
         userInfo.classList.remove('hidden');
         userName.textContent = currentAccount.name || currentAccount.username;
         welcomeScreen.classList.add('hidden');
-        loadMusic();
+        loadMusicFromOneDrive();
     }
 
     async function getAccessToken() {
         const request = { ...LOGIN_SCOPES, account: currentAccount };
         try {
-            const response = await msalInstance.acquireTokenSilent(request);
-            return response.accessToken;
-        } catch (err) {
-            // Fallback to popup if silent fails
-            const response = await msalInstance.acquireTokenPopup(request);
-            return response.accessToken;
+            return (await msalInstance.acquireTokenSilent(request)).accessToken;
+        } catch {
+            return (await msalInstance.acquireTokenPopup(request)).accessToken;
         }
     }
 
-    // OneDrive API functions
     function encodeSharingUrl(url) {
-        const base64 = btoa(url)
-            .replace(/\//g, '_')
-            .replace(/\+/g, '-')
-            .replace(/=+$/, '');
-        return 'u!' + base64;
+        return 'u!' + btoa(url).replace(/\//g, '_').replace(/\+/g, '-').replace(/=+$/, '');
     }
 
-    async function loadMusic() {
+    async function loadMusicFromOneDrive() {
         loadingScreen.classList.remove('hidden');
         try {
             const token = await getAccessToken();
@@ -122,63 +168,43 @@
             const apiUrl = `https://graph.microsoft.com/v1.0/shares/${shareToken}/driveItem/children?$select=name,size,file,@microsoft.graph.downloadUrl&$top=200`;
 
             const response = await fetch(apiUrl, {
-                headers: { 'Authorization': `Bearer ${token}` }
+                headers: { 'Authorization': `Bearer ${token}`, 'Prefer': 'redeemSharingLink' }
             });
 
             if (!response.ok) {
-                // Try alternative: access shared item directly
+                // Fallback: try with expand
                 const altUrl = `https://graph.microsoft.com/v1.0/shares/${shareToken}/driveItem?$expand=children($select=name,size,file)`;
-                const altResponse = await fetch(altUrl, {
-                    headers: { 'Authorization': `Bearer ${token}` }
+                const altResp = await fetch(altUrl, {
+                    headers: { 'Authorization': `Bearer ${token}`, 'Prefer': 'redeemSharingLink' }
                 });
-
-                if (!altResponse.ok) {
-                    throw new Error(`API error: ${altResponse.status} ${altResponse.statusText}`);
-                }
-
-                const altData = await altResponse.json();
-                if (altData.children) {
-                    processFiles(altData.children, token, shareToken);
-                } else {
-                    throw new Error('No files found in the shared folder.');
-                }
+                if (!altResp.ok) throw new Error(`API error: ${altResp.status}`);
+                const altData = await altResp.json();
+                processOneDriveFiles(altData.children || []);
                 return;
             }
 
             const data = await response.json();
-            processFiles(data.value, token, shareToken);
-
+            processOneDriveFiles(data.value || []);
         } catch (err) {
-            console.error('Load music error:', err);
             loadingScreen.classList.add('hidden');
             showError(`Failed to load music: ${err.message}`);
         }
     }
 
-    async function processFiles(files, token, shareToken) {
+    function processOneDriveFiles(files) {
         playlist = [];
-
         for (const file of files) {
-            const ext = getFileExtension(file.name);
-            if (ONEDRIVE_CONFIG.supportedFormats.includes(ext)) {
+            const ext = '.' + file.name.split('.').pop().toLowerCase();
+            if (APP_CONFIG.supportedFormats.includes(ext)) {
                 playlist.push({
                     name: file.name.replace(/\.[^/.]+$/, ''),
                     fullName: file.name,
-                    size: file.size,
-                    downloadUrl: file['@microsoft.graph.downloadUrl'] || null,
-                    id: file.id || null,
+                    size: file.size || 0,
+                    downloadUrl: file['@microsoft.graph.downloadUrl'] || file['@content.downloadUrl'] || null,
                 });
             }
         }
-
-        // Sort playlist alphabetically
         playlist.sort((a, b) => a.name.localeCompare(b.name));
-
-        // If download URLs are missing, fetch them individually
-        if (playlist.length > 0 && !playlist[0].downloadUrl) {
-            await fetchDownloadUrls(token, shareToken);
-        }
-
         loadingScreen.classList.add('hidden');
 
         if (playlist.length === 0) {
@@ -191,29 +217,8 @@
         trackCount.textContent = `${playlist.length} track${playlist.length !== 1 ? 's' : ''}`;
     }
 
-    async function fetchDownloadUrls(token, shareToken) {
-        // Fetch each file's download URL
-        for (let i = 0; i < playlist.length; i++) {
-            try {
-                const url = `https://graph.microsoft.com/v1.0/shares/${shareToken}/driveItem/children/${encodeURIComponent(playlist[i].fullName)}`;
-                const resp = await fetch(url, {
-                    headers: { 'Authorization': `Bearer ${token}` }
-                });
-                if (resp.ok) {
-                    const data = await resp.json();
-                    playlist[i].downloadUrl = data['@microsoft.graph.downloadUrl'];
-                }
-            } catch (e) {
-                console.warn(`Failed to get URL for: ${playlist[i].fullName}`);
-            }
-        }
-    }
+    // ==================== PLAYLIST & PLAYBACK ====================
 
-    function getFileExtension(filename) {
-        return '.' + filename.split('.').pop().toLowerCase();
-    }
-
-    // Playlist rendering
     function renderPlaylist() {
         playlistEl.innerHTML = playlist.map((track, index) => `
             <div class="playlist-item ${index === currentTrackIndex ? 'active' : ''}" data-index="${index}">
@@ -223,17 +228,12 @@
             </div>
         `).join('');
 
-        // Add click handlers
         playlistEl.querySelectorAll('.playlist-item').forEach(item => {
-            item.addEventListener('click', () => {
-                const index = parseInt(item.dataset.index);
-                playTrack(index);
-            });
+            item.addEventListener('click', () => playTrack(parseInt(item.dataset.index)));
         });
     }
 
-    // Playback functions
-    async function playTrack(index) {
+    function playTrack(index) {
         if (index < 0 || index >= playlist.length) return;
 
         currentTrackIndex = index;
@@ -243,34 +243,23 @@
         trackArtist.textContent = track.fullName;
 
         if (!track.downloadUrl) {
-            // Try to get a fresh download URL
-            try {
-                const token = await getAccessToken();
-                const shareToken = encodeSharingUrl(ONEDRIVE_CONFIG.sharedFolderUrl);
-                const searchUrl = `https://graph.microsoft.com/v1.0/shares/${shareToken}/driveItem/children?$filter=name eq '${encodeURIComponent(track.fullName)}'&$select=name,@microsoft.graph.downloadUrl`;
-                const resp = await fetch(searchUrl, {
-                    headers: { 'Authorization': `Bearer ${token}` }
-                });
-                if (resp.ok) {
-                    const data = await resp.json();
-                    if (data.value && data.value.length > 0) {
-                        track.downloadUrl = data.value[0]['@microsoft.graph.downloadUrl'];
-                    }
-                }
-            } catch (e) {
-                console.error('Failed to get download URL:', e);
-            }
+            showError('No download URL for this track.');
+            return;
         }
 
-        if (track.downloadUrl) {
-            audio.src = track.downloadUrl;
-            audio.play();
-            isPlaying = true;
-            updatePlayButton();
-            albumArt.classList.add('playing');
-            renderPlaylist();
-        } else {
-            showError('Unable to play this track. Download URL not available.');
+        audio.src = track.downloadUrl;
+        audio.play();
+        isPlaying = true;
+        updatePlayButton();
+        albumArt.classList.add('playing');
+        renderPlaylist();
+
+        // Update media session
+        if ('mediaSession' in navigator) {
+            navigator.mediaSession.metadata = new MediaMetadata({
+                title: track.name,
+                artist: 'OneDrive Music',
+            });
         }
     }
 
@@ -279,7 +268,6 @@
             playTrack(0);
             return;
         }
-
         if (isPlaying) {
             audio.pause();
         } else {
@@ -287,41 +275,24 @@
         }
         isPlaying = !isPlaying;
         updatePlayButton();
-        if (isPlaying) {
-            albumArt.classList.add('playing');
-        } else {
-            albumArt.classList.remove('playing');
-        }
+        albumArt.classList.toggle('playing', isPlaying);
     }
 
     function playNext() {
         if (playlist.length === 0) return;
-
-        let nextIndex;
-        if (isShuffle) {
-            nextIndex = Math.floor(Math.random() * playlist.length);
-        } else {
-            nextIndex = (currentTrackIndex + 1) % playlist.length;
-        }
-        playTrack(nextIndex);
+        let next = isShuffle
+            ? Math.floor(Math.random() * playlist.length)
+            : (currentTrackIndex + 1) % playlist.length;
+        playTrack(next);
     }
 
     function playPrev() {
         if (playlist.length === 0) return;
-
-        // If more than 3 seconds in, restart current track
-        if (audio.currentTime > 3) {
-            audio.currentTime = 0;
-            return;
-        }
-
-        let prevIndex;
-        if (isShuffle) {
-            prevIndex = Math.floor(Math.random() * playlist.length);
-        } else {
-            prevIndex = (currentTrackIndex - 1 + playlist.length) % playlist.length;
-        }
-        playTrack(prevIndex);
+        if (audio.currentTime > 3) { audio.currentTime = 0; return; }
+        let prev = isShuffle
+            ? Math.floor(Math.random() * playlist.length)
+            : (currentTrackIndex - 1 + playlist.length) % playlist.length;
+        playTrack(prev);
     }
 
     function toggleShuffle() {
@@ -339,11 +310,11 @@
         playBtn.textContent = isPlaying ? '⏸️' : '▶️';
     }
 
-    // Audio event handlers
+    // ==================== AUDIO EVENTS ====================
+
     function onTimeUpdate() {
         if (audio.duration) {
-            const progress = (audio.currentTime / audio.duration) * 100;
-            progressBar.value = progress;
+            progressBar.value = (audio.currentTime / audio.duration) * 100;
             currentTimeEl.textContent = formatTime(audio.currentTime);
             durationEl.textContent = formatTime(audio.duration);
         }
@@ -351,35 +322,23 @@
 
     function onTrackEnd() {
         if (repeatMode === 2) {
-            // Repeat one
             audio.currentTime = 0;
             audio.play();
         } else if (repeatMode === 1 || currentTrackIndex < playlist.length - 1) {
-            // Repeat all or not at end
             playNext();
         } else {
-            // End of playlist, no repeat
             isPlaying = false;
             updatePlayButton();
             albumArt.classList.remove('playing');
         }
     }
 
-    function onSeek(e) {
-        if (audio.duration) {
-            audio.currentTime = (e.target.value / 100) * audio.duration;
-        }
-    }
+    // ==================== UTILITIES ====================
 
-    function onVolumeChange(e) {
-        audio.volume = e.target.value / 100;
-    }
-
-    // Utility functions
     function formatTime(seconds) {
-        const mins = Math.floor(seconds / 60);
-        const secs = Math.floor(seconds % 60);
-        return `${mins}:${secs.toString().padStart(2, '0')}`;
+        const m = Math.floor(seconds / 60);
+        const s = Math.floor(seconds % 60);
+        return `${m}:${s.toString().padStart(2, '0')}`;
     }
 
     function formatSize(bytes) {
@@ -389,56 +348,24 @@
     }
 
     function escapeHtml(str) {
-        const div = document.createElement('div');
-        div.textContent = str;
-        return div.innerHTML;
+        const d = document.createElement('div');
+        d.textContent = str;
+        return d.innerHTML;
     }
 
     function showError(message) {
-        // Show error in the welcome area or as alert
         const existing = document.querySelector('.error-message');
         if (existing) existing.remove();
-
-        const errorEl = document.createElement('div');
-        errorEl.className = 'error-message';
-        errorEl.style.cssText = 'background: #da3633; color: white; padding: 1rem 1.5rem; border-radius: 8px; margin: 1rem auto; max-width: 500px; text-align: center;';
-        errorEl.textContent = message;
-        document.querySelector('.main-content').prepend(errorEl);
-
-        setTimeout(() => errorEl.remove(), 8000);
+        const el = document.createElement('div');
+        el.className = 'error-message';
+        el.style.cssText = 'background:#da3633;color:white;padding:1rem 1.5rem;border-radius:8px;margin:1rem auto;max-width:600px;text-align:center;';
+        el.textContent = message;
+        document.querySelector('.main-content').prepend(el);
+        setTimeout(() => el.remove(), 10000);
     }
 
-    // Keyboard shortcuts
-    function handleKeyboard(e) {
-        if (e.target.tagName === 'INPUT') return;
+    // ==================== EVENT BINDINGS ====================
 
-        switch (e.code) {
-            case 'Space':
-                e.preventDefault();
-                togglePlay();
-                break;
-            case 'ArrowRight':
-                if (e.ctrlKey) playNext();
-                else if (audio.duration) audio.currentTime = Math.min(audio.currentTime + 10, audio.duration);
-                break;
-            case 'ArrowLeft':
-                if (e.ctrlKey) playPrev();
-                else audio.currentTime = Math.max(audio.currentTime - 10, 0);
-                break;
-            case 'ArrowUp':
-                e.preventDefault();
-                audio.volume = Math.min(audio.volume + 0.1, 1);
-                volumeBar.value = audio.volume * 100;
-                break;
-            case 'ArrowDown':
-                e.preventDefault();
-                audio.volume = Math.max(audio.volume - 0.1, 0);
-                volumeBar.value = audio.volume * 100;
-                break;
-        }
-    }
-
-    // Event listeners
     function bindEvents() {
         loginBtn.addEventListener('click', signIn);
         logoutBtn.addEventListener('click', signOut);
@@ -447,26 +374,28 @@
         prevBtn.addEventListener('click', playPrev);
         shuffleBtn.addEventListener('click', toggleShuffle);
         repeatBtn.addEventListener('click', toggleRepeat);
-        progressBar.addEventListener('input', onSeek);
-        volumeBar.addEventListener('input', onVolumeChange);
+        progressBar.addEventListener('input', e => { if (audio.duration) audio.currentTime = (e.target.value / 100) * audio.duration; });
+        volumeBar.addEventListener('input', e => { audio.volume = e.target.value / 100; });
         audio.addEventListener('timeupdate', onTimeUpdate);
         audio.addEventListener('ended', onTrackEnd);
-        document.addEventListener('keydown', handleKeyboard);
 
-        // Media session API for OS-level media controls
+        document.addEventListener('keydown', e => {
+            if (e.target.tagName === 'INPUT') return;
+            switch (e.code) {
+                case 'Space': e.preventDefault(); togglePlay(); break;
+                case 'ArrowRight': e.ctrlKey ? playNext() : (audio.duration && (audio.currentTime = Math.min(audio.currentTime + 10, audio.duration))); break;
+                case 'ArrowLeft': e.ctrlKey ? playPrev() : (audio.currentTime = Math.max(audio.currentTime - 10, 0)); break;
+                case 'ArrowUp': e.preventDefault(); audio.volume = Math.min(audio.volume + 0.1, 1); volumeBar.value = audio.volume * 100; break;
+                case 'ArrowDown': e.preventDefault(); audio.volume = Math.max(audio.volume - 0.1, 0); volumeBar.value = audio.volume * 100; break;
+            }
+        });
+
         if ('mediaSession' in navigator) {
             navigator.mediaSession.setActionHandler('play', togglePlay);
             navigator.mediaSession.setActionHandler('pause', togglePlay);
             navigator.mediaSession.setActionHandler('previoustrack', playPrev);
             navigator.mediaSession.setActionHandler('nexttrack', playNext);
         }
-    }
-
-    // Initialize
-    function init() {
-        audio.volume = 0.8;
-        bindEvents();
-        initMSAL();
     }
 
     init();
