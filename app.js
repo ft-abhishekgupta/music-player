@@ -6,6 +6,9 @@
     let msalInstance = null;
     let currentAccount = null;
     let playlist = [];
+    let folderTree = null; // { name, folders: [], files: [] }
+    let currentFolder = null; // pointer to current folder in tree
+    let folderPath = []; // breadcrumb stack
     let currentTrackIndex = -1;
     let isPlaying = false;
     let isShuffle = false;
@@ -162,37 +165,13 @@
             const token = await getAccessToken();
             const shareToken = encodeSharingUrl(ONEDRIVE_CONFIG.sharedFolderUrl);
 
-            // Fetch root children
-            const rootItems = await fetchFolderChildren(shareToken, null, null, token);
-            console.log('Root items:', rootItems.length);
+            // Build folder tree
+            folderTree = { name: 'All Music', folders: [], files: [] };
+            await buildFolderTree(folderTree, shareToken, null, null, token);
 
-            // Separate folders and files
+            // Build flat playlist from all files (for playback order / prev-next)
             playlist = [];
-            const folders = [];
-            for (const item of rootItems) {
-                if (item.folder) {
-                    folders.push(item);
-                } else {
-                    addFileToPlaylist(item, null);
-                }
-            }
-
-            // Recursively fetch files from subfolders
-            for (const folder of folders) {
-                const driveId = folder.parentReference?.driveId;
-                const folderId = folder.id;
-                const folderName = folder.name;
-                console.log(`Scanning folder: ${folderName}`);
-                await loadFolderRecursive(driveId, folderId, folderName, token, shareToken);
-            }
-
-            playlist.sort((a, b) => {
-                // Sort by folder first, then by name
-                if (a.folder && b.folder && a.folder !== b.folder) return a.folder.localeCompare(b.folder);
-                return a.name.localeCompare(b.name);
-            });
-
-            // Store shareToken for later use
+            flattenTree(folderTree, null);
             playlist._shareToken = shareToken;
 
             loadingScreen.classList.add('hidden');
@@ -202,6 +181,9 @@
                 return;
             }
 
+            // Start at root folder
+            currentFolder = folderTree;
+            folderPath = [];
             renderPlaylist();
             playerContainer.classList.remove('hidden');
             trackCount.textContent = `${playlist.length} track${playlist.length !== 1 ? 's' : ''}`;
@@ -212,13 +194,53 @@
         }
     }
 
+    async function buildFolderTree(node, shareToken, driveId, folderId, token) {
+        const items = await fetchFolderChildren(shareToken, driveId, folderId, token);
+        for (const item of items) {
+            if (item.folder) {
+                const childNode = { name: item.name, folders: [], files: [] };
+                node.folders.push(childNode);
+                await buildFolderTree(
+                    childNode,
+                    shareToken,
+                    item.parentReference?.driveId || driveId,
+                    item.id,
+                    token
+                );
+            } else {
+                const ext = '.' + item.name.split('.').pop().toLowerCase();
+                if (APP_CONFIG.supportedFormats.includes(ext)) {
+                    node.files.push({
+                        name: item.name.replace(/\.[^/.]+$/, ''),
+                        fullName: item.name,
+                        size: item.size || 0,
+                        downloadUrl: item['@microsoft.graph.downloadUrl'] || item['@content.downloadUrl'] || null,
+                        itemId: item.id || null,
+                        driveId: (item.parentReference && item.parentReference.driveId) || null,
+                    });
+                }
+            }
+        }
+        // Sort folders and files alphabetically
+        node.folders.sort((a, b) => a.name.localeCompare(b.name));
+        node.files.sort((a, b) => a.name.localeCompare(b.name));
+    }
+
+    function flattenTree(node, folderName) {
+        for (const file of node.files) {
+            file.folder = folderName;
+            playlist.push(file);
+        }
+        for (const sub of node.folders) {
+            flattenTree(sub, folderName ? `${folderName}/${sub.name}` : sub.name);
+        }
+    }
+
     async function fetchFolderChildren(shareToken, driveId, folderId, token) {
         let apiUrl;
         if (driveId && folderId) {
-            // Subfolder: use drive/items endpoint
             apiUrl = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${folderId}/children?$select=id,name,size,file,folder,parentReference,@microsoft.graph.downloadUrl&$top=200`;
         } else {
-            // Root shared folder
             apiUrl = `https://graph.microsoft.com/v1.0/shares/${shareToken}/driveItem/children?$select=id,name,size,file,folder,parentReference,@microsoft.graph.downloadUrl&$top=200`;
         }
 
@@ -233,52 +255,83 @@
         return data.value || [];
     }
 
-    async function loadFolderRecursive(driveId, folderId, folderPath, token, shareToken) {
-        const items = await fetchFolderChildren(shareToken, driveId, folderId, token);
-        for (const item of items) {
-            if (item.folder) {
-                // Recurse into sub-subfolder
-                await loadFolderRecursive(
-                    item.parentReference?.driveId || driveId,
-                    item.id,
-                    `${folderPath}/${item.name}`,
-                    token,
-                    shareToken
-                );
-            } else {
-                addFileToPlaylist(item, folderPath);
-            }
-        }
-    }
-
-    function addFileToPlaylist(file, folderName) {
-        const ext = '.' + file.name.split('.').pop().toLowerCase();
-        if (APP_CONFIG.supportedFormats.includes(ext)) {
-            playlist.push({
-                name: file.name.replace(/\.[^/.]+$/, ''),
-                fullName: file.name,
-                size: file.size || 0,
-                folder: folderName || null,
-                downloadUrl: file['@microsoft.graph.downloadUrl'] || file['@content.downloadUrl'] || null,
-                itemId: file.id || null,
-                driveId: (file.parentReference && file.parentReference.driveId) || null,
-            });
-        }
-    }
-
     // ==================== PLAYLIST & PLAYBACK ====================
+
+    function navigateToFolder(folder) {
+        if (currentFolder !== folder) {
+            folderPath.push(currentFolder);
+            currentFolder = folder;
+        }
+        renderPlaylist();
+    }
+
+    function navigateBack() {
+        if (folderPath.length > 0) {
+            currentFolder = folderPath.pop();
+            renderPlaylist();
+        }
+    }
 
     function renderPlaylist(filter = '') {
         const query = filter.toLowerCase().trim();
+
+        // If searching, show flat filtered results across all folders
+        if (query) {
+            renderFlatSearch(query);
+            return;
+        }
+
+        // Hierarchical view: show breadcrumb + current folder contents
+        let html = '';
+
+        // Breadcrumb / back button
+        if (folderPath.length > 0) {
+            html += `<div class="folder-breadcrumb">
+                <button class="folder-back-btn" id="folder-back">← Back</button>
+                <span class="folder-current-name">${escapeHtml(currentFolder.name)}</span>
+            </div>`;
+        }
+
+        // Subfolders
+        for (let i = 0; i < currentFolder.folders.length; i++) {
+            const sub = currentFolder.folders[i];
+            const fileCount = countFiles(sub);
+            html += `<div class="playlist-item folder-item" data-folder-index="${i}">
+                <span class="track-number">📁</span>
+                <div class="track-info-col">
+                    <span class="track-name">${escapeHtml(sub.name)}</span>
+                    <span class="track-folder">${fileCount} track${fileCount !== 1 ? 's' : ''}</span>
+                </div>
+                <span class="folder-arrow">›</span>
+            </div>`;
+        }
+
+        // Files in current folder
+        for (const file of currentFolder.files) {
+            const index = playlist.indexOf(file);
+            html += `<div class="playlist-item ${index === currentTrackIndex ? 'active' : ''}" data-index="${index}">
+                <span class="track-number">${index === currentTrackIndex && isPlaying ? '▶' : '♪'}</span>
+                <div class="track-info-col">
+                    <span class="track-name" title="${escapeHtml(file.fullName)}">${escapeHtml(file.name)}</span>
+                </div>
+                <span class="track-size">${formatSize(file.size)}</span>
+            </div>`;
+        }
+
+        playlistEl.innerHTML = html;
+        bindPlaylistEvents();
+    }
+
+    function renderFlatSearch(query) {
         const items = playlist.map((track, index) => ({ track, index }))
-            .filter(({ track }) => !query ||
+            .filter(({ track }) =>
                 track.name.toLowerCase().includes(query) ||
                 track.fullName.toLowerCase().includes(query) ||
                 (track.folder && track.folder.toLowerCase().includes(query)));
 
         playlistEl.innerHTML = items.map(({ track, index }) => `
             <div class="playlist-item ${index === currentTrackIndex ? 'active' : ''}" data-index="${index}">
-                <span class="track-number">${index === currentTrackIndex && isPlaying ? '▶' : index + 1}</span>
+                <span class="track-number">${index === currentTrackIndex && isPlaying ? '▶' : '♪'}</span>
                 <div class="track-info-col">
                     <span class="track-name" title="${escapeHtml(track.fullName)}">${escapeHtml(track.name)}</span>
                     ${track.folder ? `<span class="track-folder">📁 ${escapeHtml(track.folder)}</span>` : ''}
@@ -287,9 +340,38 @@
             </div>
         `).join('');
 
-        playlistEl.querySelectorAll('.playlist-item').forEach(item => {
-            item.addEventListener('click', () => playTrack(parseInt(item.dataset.index)));
+        bindPlaylistEvents();
+    }
+
+    function bindPlaylistEvents() {
+        // Back button
+        const backBtn = document.getElementById('folder-back');
+        if (backBtn) {
+            backBtn.addEventListener('click', navigateBack);
+        }
+
+        // Folder navigation
+        playlistEl.querySelectorAll('.folder-item').forEach(item => {
+            item.addEventListener('click', () => {
+                const folderIndex = parseInt(item.dataset.folderIndex);
+                navigateToFolder(currentFolder.folders[folderIndex]);
+            });
         });
+
+        // Track playback
+        playlistEl.querySelectorAll('.playlist-item:not(.folder-item)').forEach(item => {
+            if (item.dataset.index !== undefined) {
+                item.addEventListener('click', () => playTrack(parseInt(item.dataset.index)));
+            }
+        });
+    }
+
+    function countFiles(node) {
+        let count = node.files.length;
+        for (const sub of node.folders) {
+            count += countFiles(sub);
+        }
+        return count;
     }
 
     async function playTrack(index) {
