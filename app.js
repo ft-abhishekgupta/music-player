@@ -119,24 +119,12 @@
     }
 
     async function signIn() {
-        try {
-            const response = await msalInstance.loginPopup(LOGIN_SCOPES);
-            currentAccount = response.account;
-            onSignedIn();
-        } catch (err) {
-            if (err.errorCode === 'user_cancelled') return;
-            showError('Sign in failed. Please try again.');
-        }
+        // Use redirect (not popup) for mobile compatibility
+        await msalInstance.loginRedirect(LOGIN_SCOPES);
     }
 
     function signOut() {
-        msalInstance.logoutPopup({ account: currentAccount });
-        currentAccount = null;
-        audio.pause();
-        loginBtn.classList.remove('hidden');
-        userInfo.classList.add('hidden');
-        playerContainer.classList.add('hidden');
-        welcomeScreen.classList.remove('hidden');
+        msalInstance.logoutRedirect({ account: currentAccount });
     }
 
     function onSignedIn() {
@@ -152,7 +140,9 @@
         try {
             return (await msalInstance.acquireTokenSilent(request)).accessToken;
         } catch {
-            return (await msalInstance.acquireTokenPopup(request)).accessToken;
+            // Use redirect instead of popup for token refresh
+            await msalInstance.acquireTokenRedirect(request);
+            return null;
         }
     }
 
