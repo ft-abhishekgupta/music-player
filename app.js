@@ -255,17 +255,17 @@
         trackArtist.textContent = track.fullName;
         renderPlaylist(searchInput ? searchInput.value : '');
 
-        // If no download URL cached, fetch it
+        // If no download URL cached, fetch it with loading indicator
         if (!track.downloadUrl) {
+            showLoadingBar(true);
             try {
                 const token = await getAccessToken();
                 const shareToken = encodeSharingUrl(ONEDRIVE_CONFIG.sharedFolderUrl);
-
-                // Try strategies in parallel where possible, use cached winning strategy
                 track.downloadUrl = await fetchDownloadUrl(track, token, shareToken);
             } catch (e) {
                 console.error('Failed to get download URL:', e);
             }
+            showLoadingBar(false);
         }
 
         if (!track.downloadUrl) {
@@ -335,10 +335,17 @@
                     return data['@microsoft.graph.downloadUrl'] || null;
 
                 case 3:
+                    // Stream: follow redirect to get the CDN URL (don't download the whole file)
                     if (!track.driveId || !track.itemId) return null;
                     url = `https://graph.microsoft.com/v1.0/drives/${track.driveId}/items/${track.itemId}/content`;
                     resp = await fetch(url, { headers: { 'Authorization': `Bearer ${token}` } });
                     if (!resp.ok) return null;
+                    // resp.url is the final redirected CDN URL (pre-authenticated, streamable)
+                    if (resp.url && resp.url !== url) {
+                        resp.body?.cancel(); // Don't download the body
+                        return resp.url;
+                    }
+                    // Fallback: if no redirect, use blob
                     return URL.createObjectURL(await resp.blob());
 
                 case 4:
@@ -347,6 +354,12 @@
                         : `https://graph.microsoft.com/v1.0/shares/${shareToken}/driveItem:/${encodeURIComponent(track.fullName)}:/content`;
                     resp = await fetch(url, { headers: { 'Authorization': `Bearer ${token}`, 'Prefer': 'redeemSharingLink' } });
                     if (!resp.ok) return null;
+                    // resp.url is the final redirected CDN URL (pre-authenticated, streamable)
+                    if (resp.url && resp.url !== url) {
+                        resp.body?.cancel(); // Don't download the body
+                        return resp.url;
+                    }
+                    // Fallback: if no redirect, use blob
                     return URL.createObjectURL(await resp.blob());
             }
         } catch (e) {
@@ -461,10 +474,25 @@
         if (existing) existing.remove();
         const el = document.createElement('div');
         el.className = 'error-message';
-        el.style.cssText = 'background:#da3633;color:white;padding:1rem 1.5rem;border-radius:8px;margin:1rem auto;max-width:600px;text-align:center;';
+        el.style.cssText = 'background:#da3633;color:white;padding:0.75rem 1rem;border-radius:8px;margin:0.5rem 1rem;text-align:center;font-size:0.85rem;';
         el.textContent = message;
-        document.querySelector('.main-content').prepend(el);
-        setTimeout(() => el.remove(), 10000);
+        document.querySelector('.playlist-section').prepend(el);
+        setTimeout(() => el.remove(), 8000);
+    }
+
+    function showLoadingBar(show) {
+        let bar = document.getElementById('track-loading-bar');
+        if (show) {
+            if (!bar) {
+                bar = document.createElement('div');
+                bar.id = 'track-loading-bar';
+                bar.className = 'track-loading-bar';
+                document.querySelector('.player-bar').prepend(bar);
+            }
+            bar.classList.add('active');
+        } else {
+            if (bar) bar.classList.remove('active');
+        }
     }
 
     // ==================== EVENT BINDINGS ====================

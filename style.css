@@ -241,6 +241,7 @@ body {
     border-top: 1px solid var(--border);
     padding-bottom: var(--safe-bottom);
     flex-shrink: 0;
+    position: relative;
 }
 
 .player-bar-progress {
@@ -415,9 +416,33 @@ body {
     }
 }
 
-/* Very small screens */
+/* Very small screens - hide shuffle/repeat but keep time */
 @media (max-width: 360px) {
-    .player-bar-extra {
+    .btn-icon-sm {
         display: none;
     }
+}
+
+/* Track loading bar */
+.track-loading-bar {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 0;
+    height: 2px;
+    background: var(--accent);
+    transition: none;
+    opacity: 0;
+}
+
+.track-loading-bar.active {
+    opacity: 1;
+    width: 100%;
+    animation: loadingSlide 2s ease-in-out infinite;
+}
+
+@keyframes loadingSlide {
+    0% { width: 0; left: 0; }
+    50% { width: 60%; left: 20%; }
+    100% { width: 0; left: 100%; }
 }
