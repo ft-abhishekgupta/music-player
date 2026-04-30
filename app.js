@@ -93,12 +93,15 @@
 
     // ==================== MSAL MODE (Microsoft Sign-in) ====================
 
-    function initMSAL() {
+    let msalReady = false;
+
+    async function initMSAL() {
         try {
             msalInstance = new msal.PublicClientApplication(MSAL_CONFIG);
-            msalInstance.handleRedirectPromise().then(handleResponse).catch(err => {
-                console.error('Redirect error:', err);
-            });
+            // MUST await handleRedirectPromise before any other MSAL calls
+            const response = await msalInstance.handleRedirectPromise();
+            msalReady = true;
+            handleResponse(response);
         } catch (err) {
             console.error('MSAL init error:', err);
             showError('Failed to initialize authentication. Check config.js.');
@@ -119,7 +122,10 @@
     }
 
     async function signIn() {
-        // Use redirect (not popup) for mobile compatibility
+        if (!msalReady) {
+            showError('Still initializing, please try again...');
+            return;
+        }
         await msalInstance.loginRedirect(LOGIN_SCOPES);
     }
 
