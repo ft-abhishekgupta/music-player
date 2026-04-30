@@ -161,31 +161,50 @@
         try {
             const token = await getAccessToken();
             const shareToken = encodeSharingUrl(ONEDRIVE_CONFIG.sharedFolderUrl);
-            // Request id, name, size, parentReference (for driveId), and downloadUrl
-            const apiUrl = `https://graph.microsoft.com/v1.0/shares/${shareToken}/driveItem/children?$select=id,name,size,file,parentReference,@microsoft.graph.downloadUrl&$top=200`;
 
-            console.log('Fetching files from:', apiUrl);
-            const response = await fetch(apiUrl, {
-                headers: { 'Authorization': `Bearer ${token}`, 'Prefer': 'redeemSharingLink' }
+            // Fetch root children
+            const rootItems = await fetchFolderChildren(shareToken, null, null, token);
+            console.log('Root items:', rootItems.length);
+
+            // Separate folders and files
+            playlist = [];
+            const folders = [];
+            for (const item of rootItems) {
+                if (item.folder) {
+                    folders.push(item);
+                } else {
+                    addFileToPlaylist(item, null);
+                }
+            }
+
+            // Recursively fetch files from subfolders
+            for (const folder of folders) {
+                const driveId = folder.parentReference?.driveId;
+                const folderId = folder.id;
+                const folderName = folder.name;
+                console.log(`Scanning folder: ${folderName}`);
+                await loadFolderRecursive(driveId, folderId, folderName, token, shareToken);
+            }
+
+            playlist.sort((a, b) => {
+                // Sort by folder first, then by name
+                if (a.folder && b.folder && a.folder !== b.folder) return a.folder.localeCompare(b.folder);
+                return a.name.localeCompare(b.name);
             });
 
-            if (!response.ok) {
-                console.log('Primary endpoint failed:', response.status, '- trying fallback');
-                // Fallback: try with expand
-                const altUrl = `https://graph.microsoft.com/v1.0/shares/${shareToken}/driveItem?$expand=children($select=id,name,size,file,parentReference)`;
-                const altResp = await fetch(altUrl, {
-                    headers: { 'Authorization': `Bearer ${token}`, 'Prefer': 'redeemSharingLink' }
-                });
-                if (!altResp.ok) throw new Error(`API error: ${altResp.status}`);
-                const altData = await altResp.json();
-                console.log('Fallback response:', JSON.stringify(altData).substring(0, 500));
-                await processOneDriveFiles(altData.children || [], token, shareToken);
+            // Store shareToken for later use
+            playlist._shareToken = shareToken;
+
+            loadingScreen.classList.add('hidden');
+
+            if (playlist.length === 0) {
+                showError('No audio files found in the shared folder.');
                 return;
             }
 
-            const data = await response.json();
-            console.log('API response - item count:', data.value?.length, '- first item:', JSON.stringify(data.value?.[0]).substring(0, 300));
-            await processOneDriveFiles(data.value || [], token, shareToken);
+            renderPlaylist();
+            playerContainer.classList.remove('hidden');
+            trackCount.textContent = `${playlist.length} track${playlist.length !== 1 ? 's' : ''}`;
         } catch (err) {
             loadingScreen.classList.add('hidden');
             console.error('loadMusicFromOneDrive error:', err);
@@ -193,36 +212,58 @@
         }
     }
 
-    async function processOneDriveFiles(files, token, shareToken) {
-        playlist = [];
-        for (const file of files) {
-            const ext = '.' + file.name.split('.').pop().toLowerCase();
-            if (APP_CONFIG.supportedFormats.includes(ext)) {
-                playlist.push({
-                    name: file.name.replace(/\.[^/.]+$/, ''),
-                    fullName: file.name,
-                    size: file.size || 0,
-                    downloadUrl: file['@microsoft.graph.downloadUrl'] || file['@content.downloadUrl'] || null,
-                    itemId: file.id || null,
-                    driveId: (file.parentReference && file.parentReference.driveId) || null,
-                });
+    async function fetchFolderChildren(shareToken, driveId, folderId, token) {
+        let apiUrl;
+        if (driveId && folderId) {
+            // Subfolder: use drive/items endpoint
+            apiUrl = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${folderId}/children?$select=id,name,size,file,folder,parentReference,@microsoft.graph.downloadUrl&$top=200`;
+        } else {
+            // Root shared folder
+            apiUrl = `https://graph.microsoft.com/v1.0/shares/${shareToken}/driveItem/children?$select=id,name,size,file,folder,parentReference,@microsoft.graph.downloadUrl&$top=200`;
+        }
+
+        const resp = await fetch(apiUrl, {
+            headers: { 'Authorization': `Bearer ${token}`, 'Prefer': 'redeemSharingLink' }
+        });
+        if (!resp.ok) {
+            console.warn(`Failed to fetch children (${resp.status}):`, apiUrl);
+            return [];
+        }
+        const data = await resp.json();
+        return data.value || [];
+    }
+
+    async function loadFolderRecursive(driveId, folderId, folderPath, token, shareToken) {
+        const items = await fetchFolderChildren(shareToken, driveId, folderId, token);
+        for (const item of items) {
+            if (item.folder) {
+                // Recurse into sub-subfolder
+                await loadFolderRecursive(
+                    item.parentReference?.driveId || driveId,
+                    item.id,
+                    `${folderPath}/${item.name}`,
+                    token,
+                    shareToken
+                );
+            } else {
+                addFileToPlaylist(item, folderPath);
             }
         }
-        playlist.sort((a, b) => a.name.localeCompare(b.name));
+    }
 
-        // Store shareToken and token for later use
-        playlist._shareToken = shareToken;
-
-        loadingScreen.classList.add('hidden');
-
-        if (playlist.length === 0) {
-            showError('No audio files found in the shared folder.');
-            return;
+    function addFileToPlaylist(file, folderName) {
+        const ext = '.' + file.name.split('.').pop().toLowerCase();
+        if (APP_CONFIG.supportedFormats.includes(ext)) {
+            playlist.push({
+                name: file.name.replace(/\.[^/.]+$/, ''),
+                fullName: file.name,
+                size: file.size || 0,
+                folder: folderName || null,
+                downloadUrl: file['@microsoft.graph.downloadUrl'] || file['@content.downloadUrl'] || null,
+                itemId: file.id || null,
+                driveId: (file.parentReference && file.parentReference.driveId) || null,
+            });
         }
-
-        renderPlaylist();
-        playerContainer.classList.remove('hidden');
-        trackCount.textContent = `${playlist.length} track${playlist.length !== 1 ? 's' : ''}`;
     }
 
     // ==================== PLAYLIST & PLAYBACK ====================
@@ -230,12 +271,18 @@
     function renderPlaylist(filter = '') {
         const query = filter.toLowerCase().trim();
         const items = playlist.map((track, index) => ({ track, index }))
-            .filter(({ track }) => !query || track.name.toLowerCase().includes(query) || track.fullName.toLowerCase().includes(query));
+            .filter(({ track }) => !query ||
+                track.name.toLowerCase().includes(query) ||
+                track.fullName.toLowerCase().includes(query) ||
+                (track.folder && track.folder.toLowerCase().includes(query)));
 
         playlistEl.innerHTML = items.map(({ track, index }) => `
             <div class="playlist-item ${index === currentTrackIndex ? 'active' : ''}" data-index="${index}">
                 <span class="track-number">${index === currentTrackIndex && isPlaying ? '▶' : index + 1}</span>
-                <span class="track-name" title="${escapeHtml(track.fullName)}">${escapeHtml(track.name)}</span>
+                <div class="track-info-col">
+                    <span class="track-name" title="${escapeHtml(track.fullName)}">${escapeHtml(track.name)}</span>
+                    ${track.folder ? `<span class="track-folder">📁 ${escapeHtml(track.folder)}</span>` : ''}
+                </div>
                 <span class="track-size">${formatSize(track.size)}</span>
             </div>
         `).join('');
