@@ -33,7 +33,7 @@
     const volumeBar = document.getElementById('volume-bar');
     const currentTimeEl = document.getElementById('current-time');
     const durationEl = document.getElementById('duration');
-    const albumArt = document.querySelector('.album-art');
+    const searchInput = document.getElementById('search-input');
 
     // ==================== INITIALIZATION ====================
 
@@ -227,8 +227,12 @@
 
     // ==================== PLAYLIST & PLAYBACK ====================
 
-    function renderPlaylist() {
-        playlistEl.innerHTML = playlist.map((track, index) => `
+    function renderPlaylist(filter = '') {
+        const query = filter.toLowerCase().trim();
+        const items = playlist.map((track, index) => ({ track, index }))
+            .filter(({ track }) => !query || track.name.toLowerCase().includes(query) || track.fullName.toLowerCase().includes(query));
+
+        playlistEl.innerHTML = items.map(({ track, index }) => `
             <div class="playlist-item ${index === currentTrackIndex ? 'active' : ''}" data-index="${index}">
                 <span class="track-number">${index === currentTrackIndex && isPlaying ? '▶' : index + 1}</span>
                 <span class="track-name" title="${escapeHtml(track.fullName)}">${escapeHtml(track.name)}</span>
@@ -337,8 +341,7 @@
         audio.play();
         isPlaying = true;
         updatePlayButton();
-        albumArt.classList.add('playing');
-        renderPlaylist();
+        renderPlaylist(searchInput ? searchInput.value : '');
 
         if ('mediaSession' in navigator) {
             navigator.mediaSession.metadata = new MediaMetadata({
@@ -360,7 +363,6 @@
         }
         isPlaying = !isPlaying;
         updatePlayButton();
-        albumArt.classList.toggle('playing', isPlaying);
     }
 
     function playNext() {
@@ -414,7 +416,6 @@
         } else {
             isPlaying = false;
             updatePlayButton();
-            albumArt.classList.remove('playing');
         }
     }
 
@@ -463,6 +464,11 @@
         volumeBar.addEventListener('input', e => { audio.volume = e.target.value / 100; });
         audio.addEventListener('timeupdate', onTimeUpdate);
         audio.addEventListener('ended', onTrackEnd);
+
+        // Search filtering
+        searchInput.addEventListener('input', e => {
+            renderPlaylist(e.target.value);
+        });
 
         document.addEventListener('keydown', e => {
             if (e.target.tagName === 'INPUT') return;

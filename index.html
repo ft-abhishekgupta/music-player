@@ -2,84 +2,70 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>Cloud Music Player</title>
     <link rel="stylesheet" href="style.css">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎵</text></svg>">
 </head>
 <body>
     <div class="app">
-        <header class="header">
-            <h1>🎵 Cloud Music Player</h1>
-            <div id="auth-section">
-                <button id="login-btn" class="btn btn-primary">Sign in with Microsoft</button>
-                <div id="user-info" class="hidden">
-                    <span id="user-name"></span>
-                    <button id="logout-btn" class="btn btn-secondary">Sign Out</button>
+        <div id="loading" class="hidden">
+            <div class="spinner"></div>
+            <p>Loading your music...</p>
+        </div>
+
+        <div id="welcome" class="welcome-screen">
+            <div class="welcome-icon">🎶</div>
+            <h2>Cloud Music Player</h2>
+            <p>Sign in with your Microsoft account to stream music from OneDrive.</p>
+            <button id="login-btn" class="btn btn-primary">Sign in with Microsoft</button>
+        </div>
+
+        <div id="player-container" class="hidden">
+            <!-- Playlist (main scrollable area) -->
+            <div class="playlist-section">
+                <div class="search-container">
+                    <input type="text" id="search-input" class="search-input" placeholder="🔍 Search songs..." autocomplete="off">
+                    <span id="track-count" class="track-count"></span>
                 </div>
-            </div>
-        </header>
-
-        <main class="main-content">
-            <div id="loading" class="hidden">
-                <div class="spinner"></div>
-                <p>Loading your music...</p>
+                <div id="playlist" class="playlist"></div>
             </div>
 
-            <div id="welcome" class="welcome-screen">
-                <div class="welcome-icon">🎶</div>
-                <h2>Welcome to Cloud Music Player</h2>
-                <p>Sign in with your Microsoft account to stream music from OneDrive.</p>
-            </div>
-
-            <div id="player-container" class="hidden">
-                <div class="player-section">
-                    <div class="now-playing">
-                        <div class="album-art">
-                            <div class="album-art-placeholder">🎵</div>
-                        </div>
-                        <div class="track-info">
-                            <h2 id="track-title">No track selected</h2>
-                            <p id="track-artist">Select a song to play</p>
+            <!-- Bottom player bar -->
+            <div class="player-bar">
+                <div class="player-bar-progress">
+                    <input type="range" id="progress-bar" class="progress-bar" min="0" max="100" value="0" step="0.1">
+                </div>
+                <div class="player-bar-content">
+                    <div class="player-bar-info">
+                        <div class="player-bar-track">
+                            <span id="track-title" class="player-bar-title">No track selected</span>
+                            <span id="track-artist" class="player-bar-artist">Select a song to play</span>
                         </div>
                     </div>
-
-                    <div class="progress-container">
-                        <span id="current-time">0:00</span>
-                        <input type="range" id="progress-bar" class="progress-bar" min="0" max="100" value="0">
-                        <span id="duration">0:00</span>
-                    </div>
-
-                    <div class="controls">
-                        <button id="shuffle-btn" class="btn-icon" title="Shuffle">🔀</button>
+                    <div class="player-bar-controls">
                         <button id="prev-btn" class="btn-icon" title="Previous">⏮️</button>
                         <button id="play-btn" class="btn-icon btn-play" title="Play">▶️</button>
                         <button id="next-btn" class="btn-icon" title="Next">⏭️</button>
-                        <button id="repeat-btn" class="btn-icon" title="Repeat">🔁</button>
                     </div>
-
-                    <div class="volume-container">
-                        <span class="volume-icon">🔊</span>
-                        <input type="range" id="volume-bar" class="volume-bar" min="0" max="100" value="80">
+                    <div class="player-bar-extra">
+                        <span id="current-time" class="time-display">0:00</span>
+                        <span class="time-separator">/</span>
+                        <span id="duration" class="time-display">0:00</span>
+                        <button id="shuffle-btn" class="btn-icon-sm" title="Shuffle">🔀</button>
+                        <button id="repeat-btn" class="btn-icon-sm" title="Repeat">🔁</button>
                     </div>
-                </div>
-
-                <div class="playlist-section">
-                    <div class="playlist-header">
-                        <h3>📂 Playlist</h3>
-                        <span id="track-count" class="track-count"></span>
-                    </div>
-                    <div id="playlist" class="playlist"></div>
                 </div>
             </div>
-        </main>
-
-        <footer class="footer">
-            <p>Powered by OneDrive & Microsoft Graph API</p>
-        </footer>
+        </div>
     </div>
 
     <audio id="audio-player"></audio>
+
+    <!-- Hidden elements for functionality -->
+    <div id="user-info" class="hidden"><span id="user-name"></span></div>
+    <button id="logout-btn" class="hidden"></button>
+    <input type="range" id="volume-bar" min="0" max="100" value="80" class="hidden">
 
     <script src="https://alcdn.msauth.net/browser/2.38.0/js/msal-browser.min.js"></script>
     <script src="config.js"></script>
